@@ -39,6 +39,8 @@ type worker struct {
 	resume <-chan struct{}
 	// jobs count processed
 	jobProcessed int64
+	// error count
+	errorsCount int64
 }
 
 func (w *worker) Stop() {
@@ -69,6 +71,8 @@ func (w *worker) Init() {
 					// an err occurred
 					if err != nil {
 						w.err <- errors.WithStack(err)
+						w.errorsCount++
+						return
 					}
 
 					w.results <- value

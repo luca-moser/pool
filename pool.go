@@ -27,13 +27,15 @@ func NewWorkerPool(numWorker int) (*WorkerPool, error) {
 	pool.results = make(chan interface{})
 	pool.done = make(chan struct{})
 	pool.resume = make(chan struct{}, numWorker)
+	pool.waitUnblock = make(chan struct{}, 1)
 
 	// spawn workers
 	for i := 0; i < numWorker; i++ {
 		pool.workers = append(pool.workers, newSyncWorker(i, pool.err, pool.results, pool.done, pool.resume))
 	}
 
-	pool.init()
+	pool.fillDrainPool()
+	pool.loop()
 	return pool, nil
 }
 
@@ -45,6 +47,7 @@ type WorkerPool struct {
 	results      chan interface{}
 	done         chan struct{}
 	resume       chan struct{}
+	waitUnblock  chan struct{}
 	IsRunning    bool
 	jobsReceived int64
 	jobsDoneMu   sync.Mutex
@@ -52,20 +55,21 @@ type WorkerPool struct {
 	mu           sync.Mutex
 }
 
-func (wp *WorkerPool) init() {
-	wp.IsRunning = true
-
-	// fill up the drain channel
+func (wp *WorkerPool) fillDrainPool() {
 	for i := 0; i < len(wp.workers); i++ {
 		wp.resume <- struct{}{}
 	}
 
-	// fill up drain channel
+	// always refill
 	go func() {
 		for wp.IsRunning {
 			wp.resume <- struct{}{}
 		}
 	}()
+}
+
+func (wp *WorkerPool) loop() {
+	wp.IsRunning = true
 
 	go func() {
 	exit:
@@ -86,10 +90,6 @@ func (wp *WorkerPool) init() {
 				// must work, as a worker signaled being done with its current job
 				if !wp.distributeJob(job) {
 					panic("no worker was available for job distribution but one signaled it was ready")
-				}
-
-				if len(wp.workers) == 1 {
-					continue
 				}
 
 			case <-wp.stop:
@@ -113,7 +113,6 @@ func (wp *WorkerPool) distributeJob(job Job) bool {
 jobSent:
 	for x := range wp.workers {
 		worker := wp.workers[x]
-		// send job to first free worker
 		select {
 		case worker.in <- job:
 			sent = true
@@ -129,6 +128,11 @@ func (wp *WorkerPool) incrementJobsDoneCounter() {
 	wp.jobsDoneMu.Lock()
 	wp.jobsDone++
 	wp.jobsDoneMu.Unlock()
+	select {
+	case wp.waitUnblock <- struct{}{}:
+	default:
+	}
+
 }
 
 // stops any further processing inside the pool
@@ -137,8 +141,15 @@ func (wp *WorkerPool) Stop() {
 }
 
 // blocks the calling goroutine as long as workers are busy
-func (wp *WorkerPool) Wait() {
-
+// respectively the given "jobs done" count is reached
+func (wp *WorkerPool) Wait(howMany int64) {
+	for true {
+		if wp.jobsDone != howMany {
+			<-wp.waitUnblock
+			continue
+		}
+		break
+	}
 }
 
 // returns a channel on which errors of workers can be fetched
@@ -187,15 +198,15 @@ func (wp *WorkerPool) DrainErrors() {
 	}()
 }
 
-func (wp *WorkerPool) Stat() map[string]int64 {
-	stat := map[string]int64{}
+func (wp *WorkerPool) Stats() map[string]int64 {
+	stats := map[string]int64{}
 	wp.mu.Lock()
 	for x := range wp.workers {
 		w := wp.workers[x]
-		stat[w.id] = w.jobProcessed
+		stats[w.id] = w.jobProcessed
 	}
 	wp.mu.Unlock()
-	return stat
+	return stats
 }
 
 func (wp *WorkerPool) AddJob(j Job) {
@@ -203,15 +214,13 @@ func (wp *WorkerPool) AddJob(j Job) {
 }
 
 func (wp *WorkerPool) Add(f func() error) {
-	wrapped := func(...interface{}) (interface{}, error) {
+	wp.in <- Job{Function: func(...interface{}) (interface{}, error) {
 		return nil, f()
-	}
-	wp.in <- Job{Function: wrapped, Arguments: nil}
+	}, Arguments: nil}
 }
 
 func (wp *WorkerPool) AddWithOut(f func() (interface{}, error)) {
-	wrapped := func(...interface{}) (interface{}, error) {
+	wp.in <- Job{Function: func(...interface{}) (interface{}, error) {
 		return f()
-	}
-	wp.in <- Job{Function: wrapped, Arguments: nil}
+	}, Arguments: nil}
 }

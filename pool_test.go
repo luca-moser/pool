@@ -23,14 +23,10 @@ func TestPool(t *testing.T) {
 
 	const iterationCount = 500
 
-	wg := sync.WaitGroup{}
-	wg.Add(iterationCount)
-
 	mu := sync.Mutex{}
 	passed := 0
 	for i := 0; i < iterationCount; i++ {
 		f := func() error {
-			defer wg.Done()
 			mu.Lock()
 			passed += 1
 			mu.Unlock()
@@ -39,7 +35,8 @@ func TestPool(t *testing.T) {
 		}
 		pool.Add(f)
 	}
-	wg.Wait()
+	pool.Wait(500)
+	pool.Stop()
 
 	if passed != iterationCount {
 		t.Fatalf("expected passed count to be %d but was %d", iterationCount, passed)

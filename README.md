@@ -15,20 +15,18 @@ pool, _ := NewWorkerPool(4)
 // auto. drain errors and results
 pool.Drain()
 
-const jobsToCreate = 10
-wg := sync.WaitGroup{}
-wg.Add(jobsToCreate)
+const amountOfJobs = 10
 
-for i := 0; i < jobsToCreate; i++ {
+for i := 0; i < amountOfJobs; i++ {
     // submit a function to the pool which the next
     // free worker goroutine will execute
     pool.Add(func() error {
-         defer wg.Done()
-         // do something expensive
+         // do something...
          return nil
      })
 }
-wg.Wait()
+// wait() waits until the given amount of jobs were processed by the pool
+pool.Wait(amountOfJobs)
 
 // free up goroutines
 pool.Stop()
