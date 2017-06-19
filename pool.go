@@ -1,9 +1,9 @@
 package pool
 
 import (
-	"sync"
-
 	"reflect"
+
+	"sync/atomic"
 
 	"github.com/pkg/errors"
 )
@@ -28,6 +28,7 @@ func NewWorkerPool(numWorker int) (*WorkerPool, error) {
 	pool.stop = make(chan struct{})
 	pool.results = make(chan interface{})
 	pool.waitUnblock = make(chan struct{}, 1)
+	pool.stats = make(chan chan map[string]int64)
 
 	// spawn workers
 	for i := 0; i < numWorker; i++ {
@@ -45,11 +46,10 @@ type WorkerPool struct {
 	stop         chan struct{}
 	results      chan interface{}
 	waitUnblock  chan struct{}
+	stats        chan chan map[string]int64
 	IsRunning    bool
 	jobsReceived int64
-	jobsDoneMu   sync.Mutex
 	jobsDone     int64
-	mu           sync.Mutex
 }
 
 func (wp *WorkerPool) loop() {
@@ -65,16 +65,22 @@ func (wp *WorkerPool) loop() {
 				wp.assignJob(job)
 
 			case <-wp.stop:
-				wp.mu.Lock()
 				for x := range wp.workers {
 					wp.workers[x].Stop()
 				}
-				wp.mu.Unlock()
 
 				close(wp.err)
 				close(wp.results)
 				close(wp.waitUnblock)
 				break exit
+
+			case back := <-wp.stats:
+				stats := map[string]int64{}
+				for x := range wp.workers {
+					w := wp.workers[x]
+					stats[w.id] = w.jobProcessed
+				}
+				back <- stats
 			}
 		}
 		wp.IsRunning = false
@@ -82,7 +88,6 @@ func (wp *WorkerPool) loop() {
 }
 
 func (wp *WorkerPool) assignJob(job Job) {
-	wp.mu.Lock()
 	cases := []reflect.SelectCase{}
 	for x := range wp.workers {
 		worker := wp.workers[x]
@@ -91,14 +96,11 @@ func (wp *WorkerPool) assignJob(job Job) {
 			Dir:  reflect.SelectSend, Send: reflect.ValueOf(job),
 		})
 	}
-	wp.mu.Unlock()
 	reflect.Select(cases)
 }
 
 func (wp *WorkerPool) incrementJobsDoneCounter() {
-	wp.jobsDoneMu.Lock()
-	wp.jobsDone++
-	wp.jobsDoneMu.Unlock()
+	atomic.AddInt64(&wp.jobsDone, 1)
 	select {
 	case wp.waitUnblock <- struct{}{}:
 	default:
@@ -170,14 +172,9 @@ func (wp *WorkerPool) DrainErrors() {
 }
 
 func (wp *WorkerPool) Stats() map[string]int64 {
-	stats := map[string]int64{}
-	wp.mu.Lock()
-	for x := range wp.workers {
-		w := wp.workers[x]
-		stats[w.id] = w.jobProcessed
-	}
-	wp.mu.Unlock()
-	return stats
+	b := make(chan map[string]int64)
+	wp.stats <- b
+	return <-b
 }
 
 func (wp *WorkerPool) AddJob(j Job) {

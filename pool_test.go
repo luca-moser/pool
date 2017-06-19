@@ -2,9 +2,8 @@ package pool
 
 import (
 	"os"
-	"sync"
+	"sync/atomic"
 	"testing"
-	"time"
 )
 
 func must(err error, t *testing.T) {
@@ -20,19 +19,15 @@ func TestMain(m *testing.M) {
 func TestPool(t *testing.T) {
 	testDrives := 50
 	for i := 0; i < testDrives; i++ {
-		pool, _ := NewWorkerPool(100)
+		pool, _ := NewWorkerPool(10)
 		pool.Drain()
 
 		const iterationCount = 3000
 
-		mu := sync.Mutex{}
-		passed := 0
+		var passed int32
 		for i := 0; i < iterationCount; i++ {
 			f := func() error {
-				mu.Lock()
-				passed += 1
-				mu.Unlock()
-				<-time.After(time.Duration(1) * time.Millisecond)
+				atomic.AddInt32(&passed, 1)
 				return nil
 			}
 			pool.Add(f)
