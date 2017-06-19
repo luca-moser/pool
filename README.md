@@ -1,4 +1,4 @@
-# Worker Pool 
+# Worker Pool [![Build Status](https://travis-ci.org/luca-moser/pool.svg?branch=master)](https://travis-ci.org/luca-moser/pool)
 
 ```diff
 - This is a work in progress!
