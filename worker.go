@@ -8,20 +8,6 @@ import (
 
 var ErrWorkerPanic = errors.New("worker panicked when executing job function")
 
-func newSyncWorker(id int, errChan chan<- error, resultChann chan<- interface{}, done chan<- struct{}, resume <-chan struct{}) *worker {
-	w := &worker{
-		id:      strconv.Itoa(id),
-		in:      make(chan Job),
-		err:     errChan,
-		done:    done,
-		stop:    make(chan struct{}),
-		results: resultChann,
-		resume:  resume,
-	}
-	w.Init()
-	return w
-}
-
 type worker struct {
 	// identification
 	id string
@@ -33,8 +19,6 @@ type worker struct {
 	results chan<- interface{}
 	// to receive a stop signal
 	stop chan struct{}
-	// to send a done signal
-	done chan<- struct{}
 	// to receive/drain from when no done signal is needed
 	resume <-chan struct{}
 	// jobs count processed
@@ -43,11 +27,23 @@ type worker struct {
 	errorsCount int64
 }
 
+func newSyncWorker(id int, errChan chan<- error, resultChann chan<- interface{}) *worker {
+	w := &worker{
+		id:      strconv.Itoa(id),
+		in:      make(chan Job),
+		err:     errChan,
+		stop:    make(chan struct{}),
+		results: resultChann,
+	}
+	w.init()
+	return w
+}
+
 func (w *worker) Stop() {
 	w.stop <- struct{}{}
 }
 
-func (w *worker) Init() {
+func (w *worker) init() {
 	go func() {
 	exit:
 		for {
@@ -79,14 +75,6 @@ func (w *worker) Init() {
 				}()
 
 				w.jobProcessed++
-				select {
-				// prioritize signaling a "done"
-				case w.done <- struct{}{}:
-				default:
-					// simply drain
-					<-w.resume
-				}
-
 			}
 		}
 	}()

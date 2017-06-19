@@ -3,6 +3,8 @@ package pool
 import (
 	"sync"
 
+	"reflect"
+
 	"github.com/pkg/errors"
 )
 
@@ -25,16 +27,13 @@ func NewWorkerPool(numWorker int) (*WorkerPool, error) {
 	pool.err = make(chan error)
 	pool.stop = make(chan struct{})
 	pool.results = make(chan interface{})
-	pool.done = make(chan struct{})
-	pool.resume = make(chan struct{}, numWorker)
 	pool.waitUnblock = make(chan struct{}, 1)
 
 	// spawn workers
 	for i := 0; i < numWorker; i++ {
-		pool.workers = append(pool.workers, newSyncWorker(i, pool.err, pool.results, pool.done, pool.resume))
+		pool.workers = append(pool.workers, newSyncWorker(i, pool.err, pool.results))
 	}
 
-	pool.fillDrainPool()
 	pool.loop()
 	return pool, nil
 }
@@ -45,27 +44,12 @@ type WorkerPool struct {
 	err          chan error
 	stop         chan struct{}
 	results      chan interface{}
-	done         chan struct{}
-	resume       chan struct{}
 	waitUnblock  chan struct{}
 	IsRunning    bool
 	jobsReceived int64
 	jobsDoneMu   sync.Mutex
 	jobsDone     int64
 	mu           sync.Mutex
-}
-
-func (wp *WorkerPool) fillDrainPool() {
-	for i := 0; i < len(wp.workers); i++ {
-		wp.resume <- struct{}{}
-	}
-
-	// always refill
-	go func() {
-		for wp.IsRunning {
-			wp.resume <- struct{}{}
-		}
-	}()
 }
 
 func (wp *WorkerPool) loop() {
@@ -78,19 +62,7 @@ func (wp *WorkerPool) loop() {
 
 			case job := <-wp.in:
 				wp.jobsReceived++
-
-				if wp.distributeJob(job) {
-					continue
-				}
-
-				// wait for a done signal of at least one worker if
-				// all workers were busy
-				<-wp.done
-
-				// must work, as a worker signaled being done with its current job
-				if !wp.distributeJob(job) {
-					panic("no worker was available for job distribution but one signaled it was ready")
-				}
+				wp.assignJob(job)
 
 			case <-wp.stop:
 				wp.mu.Lock()
@@ -100,6 +72,8 @@ func (wp *WorkerPool) loop() {
 				wp.mu.Unlock()
 
 				close(wp.err)
+				close(wp.results)
+				close(wp.waitUnblock)
 				break exit
 			}
 		}
@@ -107,21 +81,18 @@ func (wp *WorkerPool) loop() {
 	}()
 }
 
-func (wp *WorkerPool) distributeJob(job Job) bool {
-	sent := false
+func (wp *WorkerPool) assignJob(job Job) {
 	wp.mu.Lock()
-jobSent:
+	cases := []reflect.SelectCase{}
 	for x := range wp.workers {
 		worker := wp.workers[x]
-		select {
-		case worker.in <- job:
-			sent = true
-			break jobSent
-		default:
-		}
+		cases = append(cases, reflect.SelectCase{
+			Chan: reflect.ValueOf(worker.in),
+			Dir:  reflect.SelectSend, Send: reflect.ValueOf(job),
+		})
 	}
 	wp.mu.Unlock()
-	return sent
+	reflect.Select(cases)
 }
 
 func (wp *WorkerPool) incrementJobsDoneCounter() {
