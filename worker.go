@@ -1,17 +1,22 @@
 package pool
 
-import "github.com/pkg/errors"
+import (
+	"strconv"
+
+	"github.com/pkg/errors"
+)
 
 var ErrWorkerPanic = errors.New("worker panicked when executing job function")
 
-func newSyncWorker(id int, errChan chan<- error, resultChann chan<- interface{}, done chan<- struct{}, drainDone <-chan struct{}) *worker {
+func newSyncWorker(id int, errChan chan<- error, resultChann chan<- interface{}, done chan<- struct{}, resume <-chan struct{}) *worker {
 	w := &worker{
-		id:      id,
+		id:      strconv.Itoa(id),
 		in:      make(chan Job),
 		err:     errChan,
 		done:    done,
 		stop:    make(chan struct{}),
 		results: resultChann,
+		resume:  resume,
 	}
 	w.Init()
 	return w
@@ -19,7 +24,7 @@ func newSyncWorker(id int, errChan chan<- error, resultChann chan<- interface{},
 
 type worker struct {
 	// identification
-	id int
+	id string
 	// to feed in jobs
 	in chan Job
 	// to send out errors
@@ -31,7 +36,7 @@ type worker struct {
 	// to send a done signal
 	done chan<- struct{}
 	// to receive/drain from when no done signal is needed
-	drainDone <-chan struct{}
+	resume <-chan struct{}
 	// jobs count processed
 	jobProcessed int64
 }
@@ -71,8 +76,11 @@ func (w *worker) Init() {
 
 				w.jobProcessed++
 				select {
+				// prioritize signaling a "done"
 				case w.done <- struct{}{}:
-				case <-w.drainDone:
+				default:
+					// simply drain
+					<-w.resume
 				}
 
 			}

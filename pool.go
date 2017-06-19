@@ -26,11 +26,11 @@ func NewWorkerPool(numWorker int) (*WorkerPool, error) {
 	pool.stop = make(chan struct{})
 	pool.results = make(chan interface{})
 	pool.done = make(chan struct{})
-	pool.drainDone = make(chan struct{}, numWorker)
+	pool.resume = make(chan struct{}, numWorker)
 
 	// spawn workers
 	for i := 0; i < numWorker; i++ {
-		pool.workers = append(pool.workers, newSyncWorker(i, pool.err, pool.results, pool.done))
+		pool.workers = append(pool.workers, newSyncWorker(i, pool.err, pool.results, pool.done, pool.resume))
 	}
 
 	pool.init()
@@ -44,7 +44,7 @@ type WorkerPool struct {
 	stop         chan struct{}
 	results      chan interface{}
 	done         chan struct{}
-	drainDone    chan struct{}
+	resume       chan struct{}
 	IsRunning    bool
 	jobsReceived int64
 	jobsDoneMu   sync.Mutex
@@ -54,6 +54,19 @@ type WorkerPool struct {
 
 func (wp *WorkerPool) init() {
 	wp.IsRunning = true
+
+	// fill up the drain channel
+	for i := 0; i < len(wp.workers); i++ {
+		wp.resume <- struct{}{}
+	}
+
+	// fill up drain channel
+	go func() {
+		for wp.IsRunning {
+			wp.resume <- struct{}{}
+		}
+	}()
+
 	go func() {
 	exit:
 		for {
@@ -71,25 +84,12 @@ func (wp *WorkerPool) init() {
 				<-wp.done
 
 				// must work, as a worker signaled being done with its current job
-				wp.distributeJob(job)
+				if !wp.distributeJob(job) {
+					panic("no worker was available for job distribution but one signaled it was ready")
+				}
 
 				if len(wp.workers) == 1 {
 					continue
-				}
-
-				// at this point we know that len(workers) - 1 will send on the done channel
-				// therefore drain the done channel on those workers
-				// note: the worker who signaled being done could also be done with
-				// the new job in the meantime and therefore trying to send on the done channel again.
-				// we therefore fill up the buffered drain-done channel, so ever worker
-				// will be able to resume
-				for i := 0; i < len(wp.workers); i++ {
-					// as the buffer could be full from the last fill up, we never
-					// allow it to block the pool goroutine
-					if len(wp.drainDone) == len(wp.workers) {
-						break
-					}
-					wp.drainDone <- struct{}{}
 				}
 
 			case <-wp.stop:
@@ -187,8 +187,8 @@ func (wp *WorkerPool) DrainErrors() {
 	}()
 }
 
-func (wp *WorkerPool) Stat() map[int]int64 {
-	stat := map[int]int64{}
+func (wp *WorkerPool) Stat() map[string]int64 {
+	stat := map[string]int64{}
 	wp.mu.Lock()
 	for x := range wp.workers {
 		w := wp.workers[x]
