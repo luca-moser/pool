@@ -1,9 +1,5 @@
 # Worker Pool [![Build Status](https://travis-ci.org/luca-moser/pool.svg?branch=master)](https://travis-ci.org/luca-moser/pool)
 
-```diff
-- This is a work in progress!
-```
-
 A simple worker pool which receives jobs and distributes them to workers.
 Workers can send errors and results back to the pool creator through channels or handler functions.
 
