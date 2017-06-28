@@ -16,55 +16,43 @@ func TestMain(m *testing.M) {
 }
 
 func TestPool(t *testing.T) {
-	testDrives := 1000
+	testDrives := 100000
+
+	f := func() (interface{}, error) {
+		return 1, nil
+	}
 
 	for i := 0; i < testDrives; i++ {
-		pool, err := NewWorkerPool(10)
+		workerPool, err := NewWorkerPool(8)
 		if err != nil {
 			panic(err)
 		}
 
-		exit := make(chan interface{})
 		const iterationCount = 100
 		var processed int
 
-		ready := make(chan struct{})
-		go func() {
-			readySent := false
-			resultsChann := pool.Results()
-			errorsChann := pool.Errors()
-		exit:
-			for {
-				if !readySent {
-					ready <- struct{}{}
-					readySent = true
-				}
-				select {
-				case result := <-resultsChann:
-					processed += result.(int)
-				case <-errorsChann:
-					processed += 1
-				case <-exit:
-					break exit
-				}
-			}
-		}()
-		<-ready
+		resultHandler := func(result interface{}) {
+			processed += result.(int)
+		}
+
+		errorHandler := func(err error) {
+			t.Fatal(err)
+		}
+
+		workerPool.AddHandlers(resultHandler, errorHandler)
 
 		for i := 0; i < iterationCount; i++ {
-			pool.AddFuncWithResult(func() (interface{}, error) {
-				return 2, nil
-			})
-		}
-		pool.Wait(iterationCount)
-		exit <- struct{}{}
-		pool.Stop()
-
-		if pool.jobsDone != pool.jobsReceived {
-			t.Fatal("expected jobs done (%d) to equal jobs received (%d)", pool.jobsDone, pool.jobsReceived)
+			workerPool.AddFuncWithResult(f)
 		}
 
-		if processed != iterationCount*2 {
+		workerPool.Wait(iterationCount)
+		workerPool.Stop()
+
+		if workerPool.jobsDone != workerPool.jobsReceived {
+			t.Fatal("expected jobs done (%d) to equal jobs received (%d)", workerPool.jobsDone, workerPool.jobsReceived)
+		}
+
+		if processed != iterationCount {
 			t.Fatalf("expected passed count to be %d but was %d", iterationCount, processed)
 		}
 	}
