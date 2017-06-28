@@ -43,12 +43,6 @@ func TestPool(t *testing.T) {
 
 		for i := 0; i < iterationCount; i++ {
 			workerPool.AddFuncWithResult(f)
-			workerPool.AddJob(Job{
-				Function: func(args ...interface{}) (interface{}, error) {
-					return nil, nil
-				},
-				Arguments: []interface{}{1,2,3,4},
-			})
 		}
 
 		workerPool.Wait(iterationCount)
