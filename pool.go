@@ -216,6 +216,7 @@ func (wp *WorkerPool) Discard() {
 func (wp *WorkerPool) DiscardResults() {
 	go func() {
 		for range wp.Results() {
+			wp.incrJobsDoneCounter()
 		}
 	}()
 }
@@ -224,6 +225,7 @@ func (wp *WorkerPool) DiscardResults() {
 func (wp *WorkerPool) DiscardErrors() {
 	go func() {
 		for range wp.Errors() {
+			wp.incrJobsDoneCounter()
 		}
 	}()
 }
